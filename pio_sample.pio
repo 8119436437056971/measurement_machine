@@ -1,0 +1,76 @@
+; 
+
+.program piotest
+.side_set 2
+
+; timing is 0.5us
+
+.wrap_target
+public start:            
+    pull                side 0b10  [0]  ; total loop time is 200 us or 400 cycles
+    set x, 4            side 0b11  [0]
+loop:      
+    set pins, 1         side 0b00  [2]  ; 1.5us data pin one cycle high, sync pulse low
+    out pins, 1         side 0b01  [2]  ; 1.5us output data, keep sync low
+    nop                 side 0b10  [3]  ; 9.5us set sync high, delay 19 cycles
+    nop                 side 0b11  [3]  ; 
+    nop                 side 0b10  [3] 
+
+    jmp x--, loop       side 0b11  [6]
+    
+    set x, 14           side 0b10  [7]  ; delay between digits
+delay:
+    nop                 side 0b11  [7] 
+    jmp x--, delay      side 0b10  [7]
+
+.wrap
+
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void pio_sample_program_init(PIO pio, uint sm, uint offset, 
+      uint8_t pin_out,  
+      uint pin_side_data, uint pin_side_sync, uint32_t SCALEDOWN) {
+
+    pio_gpio_init(pio, pin_out);
+    pio_gpio_init(pio, pin_side_data);
+    pio_gpio_init(pio, pin_side_sync);
+     
+    pio_sm_config c = piotest_program_get_default_config(offset);
+  
+    sm_config_set_out_pins(&c, pin_out, 1);
+    sm_config_set_set_pins(&c, pin_out, 1);
+    
+    sm_config_set_sideset_pins(&c, pin_side_data);
+    
+    // pio, sm, values, mask
+    pio_sm_set_pins_with_mask(pio, sm,  (1u << pin_side_sync),//
+     (1u << pin_side_data) | (1u << pin_side_sync) | (1u << pin_out));
+    
+    pio_sm_set_pindirs_with_mask(pio, sm, 
+                        (1u << pin_side_sync) |       //
+                        (1u << pin_side_data) |       //
+                        (1u << pin_out)            ,  // dirs, 1 == out
+                        
+                        (1u << pin_side_sync) |       //
+                        (1u << pin_side_data) |       //
+                        (1u << pin_out )             // mask, apply value
+                              );
+    
+    const bool shift_right = false;
+    const bool autopull = false;
+    
+    sm_config_set_out_shift(&c, shift_right, autopull, 5);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    
+    // 0.5 ms pulse. SCALEDOWN is a scale factor to have things slower.
+    const float freq =  2000000.0 / SCALEDOWN;
+    const float div = clock_get_hz(clk_sys) / freq ;
+
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
